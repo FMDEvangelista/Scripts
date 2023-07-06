@@ -11,7 +11,7 @@ fastp --in1 Bunawan_Ascaris_1_S10_merged_R1_fastq.gz --in2 Bunawan_Ascaris_1_S10
 #Going to extract the first 120 lines of fastq files (30 reads) to check on BLAST the possible origin species of each sequence.
 gunzip -c S10_R1_trimmed.fastq.gz | head -120 > sample_S9_R1.fastq
 
-#R Script to extract the 30 sequences from the files above (read_extraction.r)
+#R Script to extract the 30 sequences from the files above is available in https://github.com/FMDEvangelista/Scripts/blob/main/read_extraction.r
 
 #reads were then submitted to BlastN in NCBI to assess identity to known reads.
 
@@ -272,7 +272,7 @@ do
 	-O ${GENE}.indel.phillipines.vcf.table
 done
 
-#these were then put into R to create plots and tables to assess quantiles. R Script available in another file (table_quantiles.r)
+#these were then put into R to create plots and tables to assess quantiles. R Script available in https://github.com/FMDEvangelista/Scripts/blob/main/tables.R
 
 #We then apply the threshold for the 1% and 99% quantiles for each gene or using the GATK suggested hard filters (https://gatk.broadinstitute.org/hc/en-us/articles/360035531112--How-to-Filter-variants-either-with-VQSR-or-by-hard-filtering#2). Need to manually change the values for each gene.
 #SNPs and INDELs were filtered seperately for each gene.
