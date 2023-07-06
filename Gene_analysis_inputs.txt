@@ -1,0 +1,978 @@
+#These code inputs were made using a Linux terminal. When R has been used, it is mentioned and redirected to the appropriate file.
+
+#Use the following to merga the fasq sequencing files. Need to rename the data according to each file and sample. Merging was done to keep both forward and reverse reads in seperate files for mapping.
+cat Run1/Bunawan_Ascaris_1_S10_S10_R1_001.fastq.gz Run2/Bunawan_Ascaris_1_S10_S10_R1_001.fastq.gz > Merged/Bunawan_Ascaris_1_S10_merged_R1_fastq.gz
+
+#fastp commands to trim data. Have to change file names to the appropriate ones. Specified the minimum length of 50bp and the adapter sequence (the rest of the trimming details follow the program default and are highlighted in the text).
+fastp --in1 Bunawan_Ascaris_1_S10_merged_R1_fastq.gz --in2 Bunawan_Ascaris_1_S10_merged_R2_fastq.gz --adapter_sequence CTGTCTCTTATACACATCT --out1 S10_R1_trimmed.fastq.gz --out2 S10_R2_trimmed.fastq.gz -l 50 -h trial.html &> trial.log
+
+#the following code is used to extract a sample from each file to blast it agaisnt ncbi database.
+
+#Going to extract the first 120 lines of fastq files (30 reads) to check on BLAST the possible origin species of each sequence.
+gunzip -c S10_R1_trimmed.fastq.gz | head -120 > sample_S9_R1.fastq
+
+#R Script to extract the 30 sequences from the files above (read_extraction.r)
+
+#reads were then submitted to BlastN in NCBI to assess identity to known reads.
+
+#Mapping the reads to the most recent A. suum genome and check mapping statistics. Should expect at least 90% mapped reads or properly-paired reads. We are being conservative here as we are using somatic cell instead of germline cells.
+
+#make bwa index the reference genome for further analysis
+bwa index Ascaris_genome2020.fa
+
+#make bwa-mem2 index the reference genome for further analysis
+bwa-mem2 index Ascaris_genome2020.fa
+
+#make REF variable (uses the reference genome)
+REF=/home/vetschool/data/francisco/Ascaris_genome2020.fa
+
+#indexing for bwa (makes an array with these names, need to change according to your naming strategy)
+INDS=("S7_" "S8_" "S9_" "S10_")
+
+#align reads and mapping with bwa-mem2
+for IND in ${INDS[@]};
+do
+	# declare variables
+	FORWARD=/home/vetschool/data/francisco/${IND}R1.fastq.gz
+	REVERSE=/home/vetschool/data/francisco/${IND}R2.fastq.gz
+	OUTPUT=/home/vetschool/data/francisco/${IND}sort.bam
+
+	# then align and sort
+	echo "Aligning $IND with bwa"
+	bwa-mem2 mem -M -t 12 $REF $FORWARD \
+	$REVERSE | samtools view -b | \
+	samtools sort -T ${IND} > $OUTPUT
+
+done
+
+#duplicate removal first time
+
+for IND in ${INDS[@]};
+do
+	# declare Picard
+	java -Xmx16g -jar /home/vetschool/mambaforge/pkgs/picard-3.0.0-hdfd78af_1/share/picard-3.0.0-1/picard.jar \
+	MarkDuplicates REMOVE_DUPLICATES=true \
+	ASSUME_SORTED=true VALIDATION_STRINGENCY=SILENT \
+	INPUT=/home/vetschool/data/francisco/${IND}sort.bam \
+	OUTPUT=/home/vetschool/data/francisco/${IND}nodup.bam \
+	METRICS_FILE=/home/vetschool/data/francisco/${IND}bam.metrics
+
+done
+
+#check mapping statistics for each sample after genome mapping
+for IND in ${INDS[@]};
+do
+	samtools flagstat ${IND}nodup.bam
+done
+
+#After checking the reads agaisnt the databases and the mapping statistics of each sample, we decided to exclude S9 due to possible contamination. We now re-apply the framework with the desired genes to samples S7, S8 and S10.
+
+#make bwa-mem2 index for the gene sequences
+bwa-mem2 index all_sequences.fa
+
+#creating dict file for SNP analysis later
+samtools dict all_sequences.fa > all_sequences.dict
+
+#make REF variable (uses the file with the gene sequences)
+REF=/home/vetschool/data/francisco/all_sequences.fa
+
+#make an array with the sample names
+INDS=("S7_" "S8_" "S10_")
+
+#making a string with gene names that we want to further analyse
+GENES=("AgR007_g063_t01" "AgR007_g282_t05" "AgB13X_g094_t05" "AgB13X_g096_t06" "AgB02_g183_t05" "AgR006_g148_t01" "AgR006_g147_t01" "AgR022_g119_t04" "AgB02_g451_t08" "AgB01_g251_t03" "AgR015_g018_t01" "chr_Mitochondria")
+
+#align reads and mapping with bwa-mem2
+for IND in ${INDS[@]};
+do
+	# declare variables
+	FORWARD=/home/vetschool/data/francisco/${IND}R1.fastq.gz
+	REVERSE=/home/vetschool/data/francisco/${IND}R2.fastq.gz
+	OUTPUT=/home/vetschool/data/francisco/${IND}sort.bam
+
+	# then align and sort -L AgR015_g018_t01:excluding un-mapped reads
+	echo "Aligning $IND with bwa"
+	bwa-mem2 mem -M -t 12 $REF $FORWARD \
+	$REVERSE | samtools view -b -F 4| \
+	samtools sort -T ${IND} > $OUTPUT
+
+done
+
+#duplicate Marking
+
+for IND in ${INDS[@]};
+do
+	# declare Picard
+	java -Xmx16g -jar /home/vetschool/mambaforge/pkgs/picard-3.0.0-hdfd78af_1/share/picard-3.0.0-1/picard.jar \
+	MarkDuplicates \
+	ASSUME_SORTED=true \
+	INPUT=/home/vetschool/data/francisco/${IND}sort.bam \
+	OUTPUT=/home/vetschool/data/francisco/${IND}nodup.bam \
+	METRICS_FILE=/home/vetschool/data/francisco/${IND}bam.metrics
+
+done
+
+#check mapping statistics.
+for IND in ${INDS[@]};
+do
+	samtools flagstat ${IND}nodup.bam
+done
+
+#read depth for all positions (how many reads overlap per region)
+for IND in ${INDS[@]};
+do
+	samtools depth ${IND}nodup.bam | gzip > ${IND}nodup_depth.txt.gz
+done
+
+#Gene coverage
+for IND in ${INDS[@]};
+do
+	samtools coverage --output ${IND}stats.txt ${IND}nodup.bam
+done
+
+# Now we need to index all bam and reference files again but with samtools
+for IND in ${INDS[@]};
+do
+	samtools index ${IND}nodup.bam
+done
+samtools faidx all_sequences.fa
+
+
+#Adding read groups (@RG) to the previous mapping files. This is a requirement for the Gatk tools going forward.
+for IND in ${INDS[@]};
+do
+	# declare Picard
+	java -Xmx16g -jar /home/vetschool/mambaforge/pkgs/picard-3.0.0-hdfd78af_1/share/picard-3.0.0-1/picard.jar \
+	AddOrReplaceReadGroups \
+	I=/home/vetschool/data/francisco/${IND}nodup.bam \
+	O=/home/vetschool/data/francisco/${IND}nodup_rg.bam \
+	RGLB=libx \
+	RGPL=Illumina \
+	RGPU=None \
+	RGSM=${IND}
+done
+
+# Now we need to index all bam files again 
+samtools index *_nodup_rg.bam
+
+#Using Gatk for variant calling. In here we selected a minimum quality of 20, a mapping of 30 and a min confidence of 30
+for IND in ${INDS[@]};
+do
+	for GENE in ${GENES[@]};
+	do
+		gatk --java-options "-Xmx64g" HaplotypeCaller \
+			-I ${IND}nodup_rg.bam \
+			-R all_sequences.fa \
+			--annotation DepthPerAlleleBySample --annotation Coverage --annotation ExcessHet --annotation FisherStrand --annotation MappingQualityRankSumTest --annotation StrandOddsRatio --annotation RMSMappingQuality --annotation ReadPosRankSumTest --annotation DepthPerSampleHC --annotation QualByDepth \
+			--min-base-quality-score 20 --minimum-mapping-quality 30 --standard-min-confidence-threshold-for-calling 30 \
+			-L ${GENE} \
+			-ERC GVCF \
+			-O Haplotype_${IND}${GENE}.g.vcf.gz
+	done
+done
+
+#Merging the g.vcf from the different samples to the same genes
+for GENE in ${GENES[@]};
+do
+	gatk CombineGVCFs \
+		-R all_sequences.fa \
+		--variant Haplotype_S7_${GENE}.g.vcf.gz \
+		--variant Haplotype_S8_${GENE}.g.vcf.gz \
+		--variant Haplotype_S10_${GENE}.g.vcf.gz \
+		-O ${GENE}.phillipines.g.vcf.gz
+done
+
+#Getting genotypes for each gene
+for GENE in ${GENES[@]};
+do
+	gatk GenotypeGVCFs \
+		-R all_sequences.fa \
+		-V ${GENE}.phillipines.g.vcf.gz \
+		--annotation DepthPerAlleleBySample --annotation Coverage --annotation ExcessHet --annotation FisherStrand --annotation MappingQualityRankSumTest --annotation StrandOddsRatio --annotation RMSMappingQuality --annotation ReadPosRankSumTest --annotation DepthPerSampleHC --annotation QualByDepth \
+		-O ${GENE}.phillipines.vcf.gz 
+done
+
+#Checking how many variants per gene
+for GENE in ${GENES[@]};
+do
+	gatk CountVariants -V ${GENE}.phillipines.vcf.gz
+done
+
+#Calculating statistics for each gene
+for GENE in ${GENES[@]};
+do
+	vcf-stats ${GENE}.phillipines.vcf.gz -p vcf_out/${GENE}/
+done
+
+#stats for missing data per sample
+for GENE in ${GENES[@]};
+do
+	vcftools --gzvcf ${GENE}.phillipines.vcf.gz --missing-indv --out vcf-out_missingdata_${GENE} 
+done
+
+#stats for missing data per site
+for GENE in ${GENES[@]};
+do
+	vcftools --gzvcf ${GENE}.phillipines.vcf.gz --missing-site --out vcf-out_missingsites_${GENE} 
+done
+
+#stats mean depth per sample
+for GENE in ${GENES[@]};
+do
+	vcftools --gzvcf ${GENE}.phillipines.vcf.gz --depth --out vcf-out_depth_${GENE} 
+done
+
+#stats mean deapth per site
+for GENE in ${GENES[@]};
+do
+	vcftools --gzvcf ${GENE}.phillipines.vcf.gz --site-mean-depth --out vcf-out_sitemeandepth_${GENE} 
+done
+#stats for quality per site
+for GENE in ${GENES[@]};
+do
+	vcftools --gzvcf ${GENE}.phillipines.vcf.gz --site-quality --out vcf-out_sitequality_${GENE} 
+done
+
+#filter SNPs and Indels
+for GENE in ${GENES[@]};
+do
+	gatk SelectVariants \
+	-R all_sequences.fa \
+	-V ${GENE}.phillipines.vcf.gz \
+	--select-type-to-include SNP \
+	-O ${GENE}.snp.phillipines.vcf.gz
+done
+
+for GENE in ${GENES[@]};
+do
+	gatk SelectVariants \
+	-R all_sequences.fa \
+	-V ${GENE}.phillipines.vcf.gz \
+	--select-type-to-include INDEL \
+	-O ${GENE}.indel.phillipines.vcf.gz
+done
+
+#Using a mixed approach for filtering. First check the qualities for each variant position. Second is to check the quantiles and either use the GATK suggested hard filters or the quantiles upper or lower 1% (whatever ended up as more stringent).
+#First get the table for the variants which have the reads characteristics for each variant position per each sample.
+for GENE in ${GENES[@]};
+do
+	gatk VariantsToTable \
+	-R all_sequences.fa \
+	-V ${GENE}.snp.phillipines.vcf.gz \
+	--fields CHROM --fields POS --fields QUAL --fields QD --fields DP --fields MQ --fields MQRankSum --fields FS --fields ReadPosRankSum --fields SOR \
+	-O ${GENE}.snp.phillipines.vcf.table
+done
+
+for GENE in ${GENES[@]};
+do
+	gatk VariantsToTable \
+	-R all_sequences.fa \
+	-V ${GENE}.indel.phillipines.vcf.gz \
+	--fields CHROM --fields POS --fields QUAL --fields QD --fields DP --fields MQ --fields MQRankSum --fields FS --fields ReadPosRankSum --fields SOR \
+	-O ${GENE}.indel.phillipines.vcf.table
+done
+
+#these were then put into R to create plots and tables to assess quantiles. R Script available in another file (table_quantiles.r)
+
+#We then apply the threshold for the 1% and 99% quantiles for each gene or using the GATK suggested hard filters (https://gatk.broadinstitute.org/hc/en-us/articles/360035531112--How-to-Filter-variants-either-with-VQSR-or-by-hard-filtering#2). Need to manually change the values for each gene.
+#SNPs and INDELs were filtered seperately for each gene.
+#GENES=("AgR007_g063_t01" "AgR007_g282_t05" "AgB13X_g094_t05" "AgB13X_g096_t06" "AgB02_g183_t05" "AgR006_g148_t01" "AgR006_g147_t01" "chr_Mitochondria")
+
+	gatk VariantFiltration \
+	-R all_sequences.fa \
+	-V AgR007_g063_t01.snp.phillipines.vcf.gz \
+	-O AgR007_g063_t01.hardfilter.snp.phillipines.vcf.gz \
+	-filter "DP < 59.60" --filter-name "DP60" \
+	-filter "QD < 2.0" --filter-name "QD2" \
+    -filter "QUAL < 77.22" --filter-name "QUAL77" \
+    -filter "FS > 39.14" --filter-name "FS39" \
+    -filter "SOR > 3.0" --filter-name "SOR3" \
+	-filter "MQ < 40.17" --filter-name "MQ40" \
+    -filter "MQRankSum < -10.99" --filter-name "MQRankSum-11" \
+    -filter "ReadPosRankSum < -3.26" --filter-name "ReadPosRankSum-3.26"	\
+	-filter "ReadPosRankSum > 3.24" --filter-name "ReadPosRankSum3.24"	
+
+	gatk VariantFiltration \
+	-R all_sequences.fa \
+	-V AgR007_g063_t01.indel.phillipines.vcf.gz \
+	-O AgR007_g063_t01.hardfilter.indel.phillipines.vcf.gz \
+	-filter "DP < 23.00" --filter-name "DP23" \
+	-filter "QD < 2.0" --filter-name "QD2" \
+    -filter "QUAL < 40.79" --filter-name "QUAL41" \
+    -filter "FS > 68.34" --filter-name "FS68" \
+    -filter "ReadPosRankSum < -4.24" --filter-name "ReadPosRankSum-4.24" 
+	
+	gatk VariantFiltration \
+	-R all_sequences.fa \
+	-V AgR007_g282_t05.snp.phillipines.vcf.gz \
+	-O AgR007_g282_t05.hardfilter.snp.phillipines.vcf.gz \
+	-filter "DP < 13.00" --filter-name "DP13" \
+	-filter "QD < 2.0" --filter-name "QD2" \
+    -filter "QUAL < 87.52" --filter-name "QUAL88" \
+    -filter "SOR > 3.0" --filter-name "SOR3" \
+    -filter "FS > 43.95" --filter-name "FS44" \
+    -filter "MQ < 40.00" --filter-name "MQ40" \
+    -filter "MQRankSum < -12.5" --filter-name "MQRankSum-12.5" \
+    -filter "ReadPosRankSum < -3.56" --filter-name "ReadPosRankSum-3.56" \
+	-filter "ReadPosRankSum > 3.71" --filter-name "ReadPosRankSum3.71"		
+
+	gatk VariantFiltration \
+	-R all_sequences.fa \
+	-V AgR007_g282_t05.indel.phillipines.vcf.gz \
+	-O AgR007_g282_t05.hardfilter.indel.phillipines.vcf.gz \
+	-filter "DP < 10.00" --filter-name "DP10.00" \
+	-filter "QD < 2.0" --filter-name "QD2" \
+    -filter "QUAL < 45.57" --filter-name "QUAL46" \
+    -filter "FS > 93.82" --filter-name "FS94" \
+    -filter "ReadPosRankSum < -3.09" --filter-name "ReadPosRankSum-3.09" 
+	
+	gatk VariantFiltration \
+	-R all_sequences.fa \
+	-V AgB13X_g094_t05.snp.phillipines.vcf.gz \
+	-O AgB13X_g094_t05.hardfilter.snp.phillipines.vcf.gz \
+	-filter "DP < 230.30" --filter-name "DP230" \
+	-filter "QD < 2.0" --filter-name "QD2" \
+    -filter "QUAL < 138.46" --filter-name "QUAL138" \
+    -filter "SOR > 3.0" --filter-name "SOR3" \
+    -filter "FS > 60.0" --filter-name "FS60" \
+    -filter "MQ < 57.41" --filter-name "MQ57" \
+    -filter "MQRankSum < -12.5" --filter-name "MQRankSum-12.5" \
+    -filter "ReadPosRankSum < -2.36" --filter-name "ReadPosRankSum-2.36" \
+	-filter "ReadPosRankSum > 2.77" --filter-name "ReadPosRankSum2.77"	
+	
+	gatk VariantFiltration \
+	-R all_sequences.fa \
+	-V AgB13X_g094_t05.indel.phillipines.vcf.gz \
+	-O AgB13X_g094_t05.hardfilter.indel.phillipines.vcf.gz \
+	-filter "DP < 152.51" --filter-name "DP152" \
+	-filter "QD < 2.0" --filter-name "QD2" \
+    -filter "QUAL < 37.25" --filter-name "QUAL37" \
+    -filter "FS > 155.32" --filter-name "FS155" \
+    -filter "ReadPosRankSum < -3.17" --filter-name "ReadPosRankSum-3.17" 
+
+	gatk VariantFiltration \
+	-R all_sequences.fa \
+	-V AgB13X_g096_t06.snp.phillipines.vcf.gz \
+	-O AgB13X_g096_t06.hardfilter.snp.phillipines.vcf.gz \
+	-filter "DP < 195.13" --filter-name "DP195" \
+	-filter "QD < 2.0" --filter-name "QD2" \
+    -filter "QUAL < 83.01" --filter-name "QUAL83" \
+    -filter "SOR > 3.0" --filter-name "SOR3" \
+    -filter "FS > 49.55" --filter-name "FS50" \
+    -filter "MQ < 58.35" --filter-name "MQ58" \
+    -filter "MQRankSum < -12.5" --filter-name "MQRankSum-12.5" \
+    -filter "ReadPosRankSum < -2.02" --filter-name "ReadPosRankSum-2" \
+	-filter "ReadPosRankSum > 3.44" --filter-name "ReadPosRankSum3"	
+	
+	gatk VariantFiltration \
+	-R all_sequences.fa \
+	-V AgB13X_g096_t06.indel.phillipines.vcf.gz \
+	-O AgB13X_g096_t06.hardfilter.indel.phillipines.vcf.gz \
+	-filter "DP < 45.67" --filter-name "DP46" \
+	-filter "QD < 2.0" --filter-name "QD2" \
+    -filter "QUAL < 83.01" --filter-name "QUAL83" \
+    -filter "FS > 67.87" --filter-name "FS68" \
+    -filter "ReadPosRankSum < -2.02" --filter-name "ReadPosRankSum-2" 
+	
+	gatk VariantFiltration \
+	-R all_sequences.fa \
+	-V AgB02_g183_t05.snp.phillipines.vcf.gz \
+	-O AgB02_g183_t05.hardfilter.snp.phillipines.vcf.gz \
+	-filter "DP < 235.90" --filter-name "DP236" \
+	-filter "QD < 10.85" --filter-name "QD11" \
+    -filter "QUAL < 628.54" --filter-name "QUAL629" \
+    -filter "SOR > 1.48" --filter-name "SOR1.5" \
+    -filter "FS > 7.78" --filter-name "FS8" \
+    -filter "MQ < 59.87" --filter-name "MQ60" \
+    -filter "MQRankSum < 0.00" --filter-name "MQRankSum0" \
+    -filter "ReadPosRankSum < -2.80" --filter-name "ReadPosRankSum-2.8" \
+	-filter "ReadPosRankSum > 2.20" --filter-name "ReadPosRankSum2.2"	
+	
+	gatk VariantFiltration \
+	-R all_sequences.fa \
+	-V AgB02_g183_t05.indel.phillipines.vcf.gz \
+	-O AgB02_g183_t05.hardfilter.indel.phillipines.vcf.gz \
+	-filter "DP < 386.10" --filter-name "DP386" \
+	-filter "QD < 11.08" --filter-name "QD11" \
+    -filter "QUAL < 748.35" --filter-name "QUAL748" \
+    -filter "FS > 5.68" --filter-name "FS6" \
+    -filter "ReadPosRankSum < -1.20" --filter-name "ReadPosRankSum-1.2" 
+	
+	gatk VariantFiltration \
+	-R all_sequences.fa \
+	-V AgR006_g148_t01.snp.phillipines.vcf.gz \
+	-O AgR006_g148_t01.hardfilter.snp.phillipines.vcf.gz \
+	-filter "DP < 273.02" --filter-name "DP273" \
+	-filter "QD < 11.92" --filter-name "QD12" \
+    -filter "QUAL < 1064.5" --filter-name "QUAL1065" \
+    -filter "SOR > 1.62" --filter-name "SOR1.6" \
+    -filter "FS > 11.65" --filter-name "FS12" \
+    -filter "MQ < 59.51" --filter-name "MQ60" \
+    -filter "MQRankSum < 0.00" --filter-name "MQRankSum0" \
+    -filter "ReadPosRankSum < -1.86" --filter-name "ReadPosRankSum-1.9" \
+	-filter "ReadPosRankSum > 2.48" --filter-name "ReadPosRankSum2.5"	
+	
+	gatk VariantFiltration \
+	-R all_sequences.fa \
+	-V AgR006_g148_t01.indel.phillipines.vcf.gz \
+	-O AgR006_g148_t01.hardfilter.indel.phillipines.vcf.gz \
+	-filter "DP < 415.26" --filter-name "DP415" \
+	-filter "QD < 2.0" --filter-name "QD2" \
+    -filter "QUAL < 40.28" --filter-name "QUAL40" \
+    -filter "FS > 92.44" --filter-name "FS92" \
+    -filter "ReadPosRankSum < -0.54" --filter-name "ReadPosRankSum-2" 
+	
+	gatk VariantFiltration \
+	-R all_sequences.fa \
+	-V AgR006_g147_t01.snp.phillipines.vcf.gz \
+	-O AgR006_g147_t01.hardfilter.snp.phillipines.vcf.gz \
+	-filter "DP < 270.44" --filter-name "DP270" \
+	-filter "QD < 12.78" --filter-name "QD13" \
+    -filter "QUAL < 984.18" --filter-name "QUAL984" \
+    -filter "SOR > 1.61" --filter-name "SOR2" \
+    -filter "FS > 15.31" --filter-name "FS15" \
+    -filter "MQ < 59.66" --filter-name "MQ60" \
+    -filter "MQRankSum < -0.00" --filter-name "MQRankSum-0" \
+    -filter "ReadPosRankSum < -1.86" --filter-name "ReadPosRankSum-2" \
+	-filter "ReadPosRankSum > 2.30" --filter-name "ReadPosRankSum2"	
+	
+	gatk VariantFiltration \
+	-R all_sequences.fa \
+	-V AgR006_g147_t01.indel.phillipines.vcf.gz \
+	-O AgR006_g147_t01.hardfilter.indel.phillipines.vcf.gz \
+	-filter "DP < 430.2" --filter-name "DP430" \
+	-filter "QD < 14.39" --filter-name "QD14" \
+    -filter "QUAL < 1127.12" --filter-name "QUAL1127" \
+    -filter "FS > 5.87" --filter-name "FS6" \
+    -filter "ReadPosRankSum < -2.10" --filter-name "ReadPosRankSum-2" 
+	
+	gatk VariantFiltration \
+	-R all_sequences.fa \
+	-V AgR022_g119_t04.snp.phillipines.vcf.gz \
+	-O AgR022_g119_t04.hardfilter.snp.phillipines.vcf.gz \
+	-filter "DP < 158.64" --filter-name "DP159" \
+	-filter "QD < 10.11" --filter-name "QD10" \
+    -filter "QUAL < 105.38" --filter-name "QUAL105" \
+    -filter "FS > 18.23" --filter-name "FS18" \
+    -filter "SOR > 2.33" --filter-name "SOR2" \
+	-filter "MQ < 58.62" --filter-name "MQ59" \
+    -filter "MQRankSum < -11.30" --filter-name "MQRankSum-11" \
+    -filter "ReadPosRankSum < -2.58" --filter-name "ReadPosRankSum-2.6"	\
+	-filter "ReadPosRankSum > 2.63" --filter-name "ReadPosRankSum2.6"	
+
+	gatk VariantFiltration \
+	-R all_sequences.fa \
+	-V AgR022_g119_t04.indel.phillipines.vcf.gz \
+	-O AgR022_g119_t04.hardfilter.indel.phillipines.vcf.gz \
+	-filter "DP < 166.38" --filter-name "DP166" \
+	-filter "QD < 2.0" --filter-name "QD2" \
+    -filter "QUAL < 35.31" --filter-name "QUAL35" \
+    -filter "FS > 54.83" --filter-name "FS55" \
+    -filter "ReadPosRankSum < -2.16" --filter-name "ReadPosRankSum-2.16" 
+	
+	gatk VariantFiltration \
+	-R all_sequences.fa \
+	-V AgB02_g451_t08.snp.phillipines.vcf.gz \
+	-O AgB02_g451_t08.hardfilter.snp.phillipines.vcf.gz \
+	-filter "DP < 80.76" --filter-name "DP81" \
+	-filter "QD < 2.0" --filter-name "QD2" \
+    -filter "QUAL < 42.27" --filter-name "QUAL42" \
+    -filter "SOR > 3.0" --filter-name "SOR3" \
+    -filter "FS > 60.0" --filter-name "FS60" \
+    -filter "MQ < 40.00" --filter-name "MQ40" \
+    -filter "MQRankSum < -12.5" --filter-name "MQRankSum-12.5" \
+    -filter "ReadPosRankSum < -2.71" --filter-name "ReadPosRankSum-2.71" \
+	-filter "ReadPosRankSum > 3.20" --filter-name "ReadPosRankSum3.2"		
+
+	gatk VariantFiltration \
+	-R all_sequences.fa \
+	-V AgB02_g451_t08.indel.phillipines.vcf.gz \
+	-O AgB02_g451_t08.hardfilter.indel.phillipines.vcf.gz \
+	-filter "DP < 227.92" --filter-name "DP228" \
+	-filter "QD < 2.0" --filter-name "QD2" \
+    -filter "QUAL < 32.25" --filter-name "QUAL32" \
+    -filter "FS > 200.00" --filter-name "FS200" \
+    -filter "ReadPosRankSum < -2.24" --filter-name "ReadPosRankSum-2.24" 
+	
+	gatk VariantFiltration \
+	-R all_sequences.fa \
+	-V AgB01_g251_t03.snp.phillipines.vcf.gz \
+	-O AgB01_g251_t03.hardfilter.snp.phillipines.vcf.gz \
+	-filter "DP < 36.60" --filter-name "DP32" \
+	-filter "QD < 3.93" --filter-name "QD4" \
+    -filter "QUAL < 295.27" --filter-name "QUAL295" \
+    -filter "SOR > 2.9" --filter-name "SOR3" \
+    -filter "FS > 15.99" --filter-name "FS16" \
+    -filter "MQ < 40.0" --filter-name "MQ40" \
+    -filter "MQRankSum < -6.63" --filter-name "MQRankSum-7" \
+    -filter "ReadPosRankSum < -2.46" --filter-name "ReadPosRankSum-2.5" \
+	-filter "ReadPosRankSum > 2.59" --filter-name "ReadPosRankSum2.6"	
+	
+	gatk VariantFiltration \
+	-R all_sequences.fa \
+	-V AgB01_g251_t03.indel.phillipines.vcf.gz \
+	-O AgB01_g251_t03.hardfilter.indel.phillipines.vcf.gz \
+	-filter "DP < 80.82" --filter-name "DP81" \
+	-filter "QD < 2.0" --filter-name "QD2" \
+    -filter "QUAL < 52.93" --filter-name "QUAL53" \
+    -filter "FS > 20.61" --filter-name "FS21" \
+    -filter "ReadPosRankSum < -1.71" --filter-name "ReadPosRankSum-1.7" 
+	
+	gatk VariantFiltration \
+	-R all_sequences.fa \
+	-V AgR015_g018_t01.snp.phillipines.vcf.gz \
+	-O AgR015_g018_t01.hardfilter.snp.phillipines.vcf.gz \
+	-filter "DP < 10.00" --filter-name "DP10" \
+	-filter "QD < 2.0" --filter-name "QD2" \
+    -filter "QUAL < 59.96" --filter-name "QUAL60" \
+    -filter "SOR > 3.0" --filter-name "SOR3" \
+    -filter "FS > 54.13" --filter-name "FS54" \
+    -filter "MQ < 40.0" --filter-name "MQ40" \
+    -filter "MQRankSum < -11.46" --filter-name "MQRankSum-11" \
+    -filter "ReadPosRankSum < -3.90" --filter-name "ReadPosRankSum-3.90" \
+	-filter "ReadPosRankSum > 4.21" --filter-name "ReadPosRankSum4.2"	
+	
+	gatk VariantFiltration \
+	-R all_sequences.fa \
+	-V AgR015_g018_t01.indel.phillipines.vcf.gz \
+	-O AgR015_g018_t01.hardfilter.indel.phillipines.vcf.gz \
+	-filter "DP < 10.00" --filter-name "DP10" \
+	-filter "QD < 2.0" --filter-name "QD2" \
+    -filter "QUAL < 37.18" --filter-name "QUAL37" \
+    -filter "FS > 61.1" --filter-name "FS61" \
+    -filter "ReadPosRankSum < -4.37" --filter-name "ReadPosRankSum-4.4"
+		
+	gatk VariantFiltration \
+	-R all_sequences.fa \
+	-V chr_Mitochondria.snp.phillipines.vcf.gz \
+	-O chr_Mitochondria.hardfilter.snp.phillipines.vcf.gz \
+	-filter "DP < 10525.56" --filter-name "DP10526" \
+	-filter "QD < 21.52" --filter-name "QD22" \
+    -filter "QUAL < 193475.36" --filter-name "QUAL193475" \
+    -filter "SOR > 1.48" --filter-name "SOR1.5" \
+    -filter "FS > 0.01" --filter-name "FS0" \
+    -filter "MQ < 59.95" --filter-name "MQ60" \
+    -filter "MQRankSum < -7.27" --filter-name "MQRankSum-7" \
+    -filter "ReadPosRankSum < -2.73" --filter-name "ReadPosRankSum-2.7" \
+	-filter "ReadPosRankSum > 4.47" --filter-name "ReadPosRankSum4.5"	
+	
+	gatk VariantFiltration \
+	-R all_sequences.fa \
+	-V chr_Mitochondria.indel.phillipines.vcf.gz \
+	-O chr_Mitochondria.hardfilter.indel.phillipines.vcf.gz \
+	-filter "DP < 12240.40" --filter-name "DP12240" \
+	-filter "QD < 27.71" --filter-name "QD28" \
+    -filter "QUAL < 177403.64" --filter-name "QUAL1177403" \
+    -filter "FS > 1.64" --filter-name "FS2" \
+    -filter "ReadPosRankSum < 1.04" --filter-name "ReadPosRankSum1" 
+
+#getting the stats for missing data per individual and site on snp and indel files
+for GENE in ${GENES[@]};
+do
+	vcftools --gzvcf ${GENE}.hardfilter.snp.phillipines.vcf.gz --missing-indv --out vcf-out_missingsamples_snp_${GENE}
+done
+
+for GENE in ${GENES[@]};
+do
+	vcftools --gzvcf ${GENE}.hardfilter.indel.phillipines.vcf.gz --missing-indv --out vcf-out_missingsamples_indel_${GENE} 
+done
+
+for GENE in ${GENES[@]};
+do
+	vcftools --gzvcf ${GENE}.hardfilter.snp.phillipines.vcf.gz --missing-site --out vcf-out_missingsites_snp_${GENE} 
+done
+
+for GENE in ${GENES[@]};
+do
+	vcftools --gzvcf ${GENE}.hardfilter.indel.phillipines.vcf.gz --missing-site --out vcf-out_missingsites_indel_${GENE} 
+done
+
+#re-merge the vcfs with filtered indel and snps
+for GENE in ${GENES[@]};
+do
+	java -Xmx16g -jar /home/vetschool/mambaforge/pkgs/picard-3.0.0-hdfd78af_1/share/picard-3.0.0-1/picard.jar MergeVcfs \
+	-R all_sequences.fa \
+	-I ${GENE}.hardfilter.snp.phillipines.vcf.gz \
+	-I ${GENE}.hardfilter.indel.phillipines.vcf.gz \
+	-O ${GENE}.merged.variants.phillipines.vcf.gz
+done
+
+#remove the sites that were filtered out
+for GENE in ${GENES[@]};
+do
+	vcftools --gzvcf MergeVcfs \
+	--gzvcf ${GENE}.merged.variants.phillipines.vcf.gz \
+	--remove-filtered-geno-all \
+	--remove-filtered-all \
+	--recode \
+	--recode-INFO-all \
+	--out ${GENE}.filtered.merged.variants.phillipines.vcf.gz
+done
+
+#gz them back
+for GENE in ${GENES[@]};
+do
+	gzip -c -f ${GENE}.filtered.merged.variants.phillipines.vcf.gz.recode.vcf > ${GENE}.filtered.merged.variants.phillipines.vcf.gz
+done
+
+#check the TsTv ratio
+for GENE in ${GENES[@]};
+do
+	vcftools --gzvcf ${GENE}.filtered.merged.variants.phillipines.vcf.gz --TsTv-summary
+done
+
+#check stats for each file
+for GENE in ${GENES[@]};
+do
+	bcftools stats -F all_sequences.fa ${GENE}.filtered.merged.variants.phillipines.vcf.gz > ${GENE}.filtered.merged.variants.phillipines.vcf.stats
+done
+
+#check the position for the variants in the vcf files. Also inputs the reference and variant allele with the sample name and genotype
+for GENE in ${GENES[@]};
+do
+	bcftools query -f '%CHROM %POS %REF %ALT [%SAMPLE]\n' ${GENE}.filtered.merged.variants.phillipines.vcf.gz > ${GENE}.filtered.merged.variants.positions.phillipines.txt
+done
+
+#check the divergency for each site
+for GENE in ${GENES[@]};
+do
+	vcftools --gzvcf ${GENE}.filtered.merged.variants.phillipines.vcf.gz \
+	--site-pi \
+	--out ${GENE}_site_div
+done
+
+#check the frequency for each site
+for GENE in ${GENES[@]};
+do
+	vcftools --gzvcf ${GENE}.filtered.merged.variants.phillipines.vcf.gz \
+	--freq \
+	--out ${GENE}_site_freq
+done
+
+#check hardy. Reports a p-value for each site from a Hardy-Weinberg Equilibrium test (as defined by Wigginton -L AgR015_g018_t01:Cutler and Abecasis (2005))
+for GENE in ${GENES[@]};
+do
+	vcftools --gzvcf ${GENE}.filtered.merged.variants.phillipines.vcf.gz \
+	--hardy \
+	--out ${GENE}_site_hardy
+done
+
+#use IGV app to have an overview of variant positions and distribution. Epitope and overall gene variation analysis was done by manual curation using IGV for visualisation.
+
+#Creating a subset for each sample in each gene and later selecting only the exon area.
+#Applied the following to extract the variants only for the vaccine target genes
+GENES=("AgR007_g063_t01" "AgR007_g282_t05" "AgB13X_g094_t05" "AgB13X_g096_t06" "AgB02_g183_t05" "AgR006_g148_t01" "AgR006_g147_t01")
+
+#used the following for baseline genes
+GENES=("AgR022_g119_t04" "AgB02_g451_t08" "AgB01_g251_t03" "AgR015_g018_t01")
+
+for IND in ${INDS[@]};
+do
+	for GENE in ${GENES[@]};
+	do
+	vcf-subset --exclude-ref -c ${IND} ${GENE}.filtered.merged.variants.phillipines.vcf.gz > ${IND}${GENE}_variants.vcf 
+	done
+done
+
+#must index file before continuing
+for IND in ${INDS[@]};
+do
+	for GENE in ${GENES[@]};
+	do
+	gatk IndexFeatureFile \
+    -I ${IND}${GENE}_variants.vcf
+	done
+done
+
+#calling a new sequence for each gene using the alternative alleles present in each sample. Need to manually input the protein-coding coordinates for each gene, according to the reference gene used.
+for IND in ${INDS[@]};
+do
+gatk FastaAlternateReferenceMaker \
+-R all_sequences.fa \
+-L AgR007_g063_t01:129-195 \ 
+-L AgR007_g063_t01:1009-1101 \
+-L AgR007_g063_t01:4656-4775 \
+-L AgR007_g063_t01:5528-5657 \
+-L AgR007_g063_t01:8013-8070 \
+-L AgR007_g063_t01:8946-9086 \
+-L AgR007_g063_t01:9932-10125 \
+-L AgR007_g063_t01:11006-11156 \
+-L AgR007_g063_t01:12213-12293 \
+-L AgR007_g063_t01:15505-15603 \
+-L AgR007_g063_t01:17406-17534 \
+-L AgR007_g063_t01:18235-18318 \
+-L AgR007_g063_t01:19482-19662 \
+-L AgR007_g063_t01:20481-20665 \
+-L AgR007_g063_t01:21043-21191 \
+-L AgR007_g063_t01:21648-21792 \
+-L AgR007_g063_t01:22271-22386 \
+-L AgR007_g063_t01:22769-23012 \
+-L AgR007_g063_t01:23874-24047 \
+-L AgR007_g063_t01:25623-25706 \
+-L AgR007_g063_t01:26384-26584 \
+-L AgR007_g063_t01:28271-28472 \
+-L AgR007_g063_t01:29496-29585 \
+-L AgR007_g063_t01:30315-30513 \
+-L AgR007_g063_t01:31697-31885 \
+-L AgR007_g063_t01:32514-32674 \
+-L AgR007_g063_t01:33276-33444 \
+-L AgR007_g063_t01:33872-33993 \
+-L AgR007_g063_t01:39041-39114 \
+-L AgR007_g063_t01:40353-40495 \
+-L AgR007_g063_t01:42842-42979 \
+-L AgR007_g063_t01:43715-43916 \
+-L AgR007_g063_t01:44790-44883 \
+-L AgR007_g063_t01:45295-45420 \
+-L AgR007_g063_t01:46018-46199 \
+-L AgR007_g063_t01:46899-46968 \
+-L AgR007_g063_t01:47682-47860 \
+-L AgR007_g063_t01:48326-48538 \
+-L AgR007_g063_t01:49182-49397 \
+-L AgR007_g063_t01:49916-50092 \
+-L AgR007_g063_t01:50578-50767 \
+-L AgR007_g063_t01:52004-52079 \
+-L AgR007_g063_t01:52735-52882 \
+-L AgR007_g063_t01:53606-53764 \
+-L AgR007_g063_t01:54701-54838 \
+-L AgR007_g063_t01:55610-55692 \
+-L AgR007_g063_t01:56283-56430 \
+-L AgR007_g063_t01:57313-57498 \
+-L AgR007_g063_t01:58527-58619 \
+-L AgR007_g063_t01:59603-59772 \
+-L AgR007_g063_t01:60337-60459 \
+-L AgR007_g063_t01:61180-61270 \
+-L AgR007_g063_t01:62700-62870 \
+-L AgR007_g063_t01:63592-63705 \
+-L AgR007_g063_t01:64122-64298 \
+-O ${IND}AgR007_g063_t01_variants_sequence.fa \
+-V ${IND}AgR007_g063_t01_variants.vcf
+done
+
+for IND in ${INDS[@]};
+do
+gatk FastaAlternateReferenceMaker \
+-R all_sequences.fa \
+-L AgR007_g282_t05:639-645 \ 
+-L AgR007_g282_t05:35116-35207 \
+-L AgR007_g282_t05:36443-36606 \
+-L AgR007_g282_t05:37231-37336 \
+-L AgR007_g282_t05:39941-40080 \
+-L AgR007_g282_t05:41654-41760 \
+-L AgR007_g282_t05:42569-42704 \
+-L AgR007_g282_t05:44138-44223 \
+-L AgR007_g282_t05:49449-49600 \
+-L AgR007_g282_t05:51173-51276 \
+-L AgR007_g282_t05:52096-52183 \
+-L AgR007_g282_t05:53948-54029 \
+-L AgR007_g282_t05:58630-58747 \
+-L AgR007_g282_t05:60153-60265 \
+-L AgR007_g282_t05:60793-60916 \
+-L AgR007_g282_t05:62275-62376 \
+-L AgR007_g282_t05:62915-63032 \
+-L AgR007_g282_t05:64298-64390 \
+-L AgR007_g282_t05:66244-66457 \
+-L AgR007_g282_t05:67130-67214 \
+-L AgR007_g282_t05:67628-67771 \
+-L AgR007_g282_t05:68819-68942 \
+-L AgR007_g282_t05:69490-69744 \
+-L AgR007_g282_t05:70696-70856 \
+-L AgR007_g282_t05:71936-72082 \
+-L AgR007_g282_t05:72787-72988 \
+-L AgR007_g282_t05:73948-74234 \
+-L AgR007_g282_t05:75805-75994 \
+-L AgR007_g282_t05:76400-76465 \
+-L AgR007_g282_t05:76870-76961 \
+-L AgR007_g282_t05:77627-77795 \
+-L AgR007_g282_t05:78103-78327 \
+-L AgR007_g282_t05:80987-81191 \
+-L AgR007_g282_t05:82790-82885 \
+-L AgR007_g282_t05:85040-85185 \
+-L AgR007_g282_t05:89579-89690 \
+-L AgR007_g282_t05:97119-97374 \
+-L AgR007_g282_t05:98753-98950 \
+-L AgR007_g282_t05:99641-99813 \
+-L AgR007_g282_t05:100330-100520 \
+-O ${IND}AgR007_g282_t05_variants_sequence.fa \
+-V ${IND}AgR007_g282_t05_variants.vcf
+done
+
+for IND in ${INDS[@]};
+do
+gatk FastaAlternateReferenceMaker \
+-R all_sequences.fa \
+-L AgB13X_g094_t05:164-325 \
+-L AgB13X_g094_t05:1265-1476 \
+-L AgB13X_g094_t05:3589-3823 \
+-L AgB13X_g094_t05:5904-5995 \
+-L AgB13X_g094_t05:8885-9003 \
+-L AgB13X_g094_t05:10547-10658 \
+-L AgB13X_g094_t05:11854-11922 \
+-L AgB13X_g094_t05:12554-12661 \
+-L AgB13X_g094_t05:13149-13305 \
+-L AgB13X_g094_t05:13992-14084 \
+-L AgB13X_g094_t05:14520-14646 \
+-L AgB13X_g094_t05:15754-15872 \
+-L AgB13X_g094_t05:16584-16725 \
+-L AgB13X_g094_t05:18556-18666 \
+-L AgB13X_g094_t05:19672-19874 \
+-L AgB13X_g094_t05:20835-20990 \
+-L AgB13X_g094_t05:22776-22927 \
+-L AgB13X_g094_t05:23431-23616 \
+-L AgB13X_g094_t05:26056-26215 \
+-L AgB13X_g094_t05:26618-26797 \
+-L AgB13X_g094_t05:27697-27804 \
+-L AgB13X_g094_t05:28354-28467 \
+-L AgB13X_g094_t05:29947-30068 \
+-L AgB13X_g094_t05:30572-30685 \
+-L AgB13X_g094_t05:32512-32692 \
+-L AgB13X_g094_t05:32952-33109 \
+-L AgB13X_g094_t05:33544-33724 \
+-L AgB13X_g094_t05:34985-35108 \
+-L AgB13X_g094_t05:35281-35480 \
+-L AgB13X_g094_t05:36342-36461 \
+-L AgB13X_g094_t05:36766-36855 \
+-L AgB13X_g094_t05:37455-37680 \
+-L AgB13X_g094_t05:38010-38114 \
+-L AgB13X_g094_t05:38294-38450 \
+-L AgB13X_g094_t05:40702-40832 \
+-L AgB13X_g094_t05:41155-41304 \
+-L AgB13X_g094_t05:41593-41714 \
+-L AgB13X_g094_t05:43354-43540 \
+-L AgB13X_g094_t05:44328-44428 \
+-O ${IND}AgB13X_g094_t05_variants_sequence.fa \
+-V ${IND}AgB13X_g094_t05_variants.vcf
+done
+
+for IND in ${INDS[@]};
+do
+gatk FastaAlternateReferenceMaker \
+-R all_sequences.fa \
+-L AgB13X_g096_t06:53-194 \
+-L AgB13X_g096_t06:695-894 \
+-L AgB13X_g096_t06:1365-1595 \
+-L AgB13X_g096_t06:1710-1961 \
+-L AgB13X_g096_t06:2298-2559 \
+-L AgB13X_g096_t06:3199-3360 \
+-L AgB13X_g096_t06:4768-5011 \
+-L AgB13X_g096_t06:6645-6906 \
+-L AgB13X_g096_t06:7423-7520 \
+-L AgB13X_g096_t06:8138-8281 \
+-L AgB13X_g096_t06:9113-9252 \
+-L AgB13X_g096_t06:10768-11029 \
+-L AgB13X_g096_t06:12762-12921 \
+-L AgB13X_g096_t06:13700-13781 \
+-L AgB13X_g096_t06:16321-16449 \
+-L AgB13X_g096_t06:20872-21097 \
+-L AgB13X_g096_t06:22461-22587 \
+-L AgB13X_g096_t06:22884-22961 \
+-L AgB13X_g096_t06:23380-23489 \
+-L AgB13X_g096_t06:24836-25203 \
+-L AgB13X_g096_t06:26485-26651 \
+-L AgB13X_g096_t06:28815-28961 \
+-L AgB13X_g096_t06:29655-29825 \
+-L AgB13X_g096_t06:30168-30258 \
+-L AgB13X_g096_t06:30798-30887 \
+-L AgB13X_g096_t06:31595-31773 \
+-L AgB13X_g096_t06:32695-32952 \
+-L AgB13X_g096_t06:34277-34381 \
+-L AgB13X_g096_t06:35640-35797 \
+-L AgB13X_g096_t06:36754-36929 \
+-L AgB13X_g096_t06:37475-37944 \
+-L AgB13X_g096_t06:38902-39102 \
+-L AgB13X_g096_t06:39491-39609 \
+-L AgB13X_g096_t06:39795-39936 \
+-L AgB13X_g096_t06:41280-41390 \
+-L AgB13X_g096_t06:41847-41993 \
+-L AgB13X_g096_t06:42809-42920 \
+-L AgB13X_g096_t06:43342-43625 \
+-O ${IND}AgB13X_g096_t06_variants_sequence.fa \
+-V ${IND}AgB13X_g096_t06_variants.vcf
+done
+
+for IND in ${INDS[@]};
+do
+gatk FastaAlternateReferenceMaker \
+-R all_sequences.fa \
+-L AgB02_g183_t05:2909-3037 \
+-L AgB02_g183_t05:3817-3900 \
+-L AgB02_g183_t05:4233-4323 \
+-L AgB02_g183_t05:4611-4729 \
+-L AgB02_g183_t05:5026-5115 \
+-L AgB02_g183_t05:5399-5492 \
+-L AgB02_g183_t05:6403-6518 \
+-L AgB02_g183_t05:6596-6706 \
+-L AgB02_g183_t05:6843-6933 \
+-L AgB02_g183_t05:8703-8743 \
+-O ${IND}AgB02_g183_t05_variants_sequence.fa \
+-V ${IND}AgB02_g183_t05_variants.vcf
+done
+
+for IND in ${INDS[@]};
+do
+gatk FastaAlternateReferenceMaker \
+-R all_sequences.fa \
+-L AgR006_g148_t01:717-1043 \
+-L AgR006_g148_t01:1592-1778 \
+-L AgR006_g148_t01:2675-2730 \
+-O ${IND}AgR006_g148_t01_variants_sequence.fa \
+-V ${IND}AgR006_g148_t01_variants.vcf
+done
+
+for IND in ${INDS[@]};
+do
+gatk FastaAlternateReferenceMaker \
+-R all_sequences.fa \
+-L AgR006_g147_t01:144-347 \
+-L AgR006_g147_t01:700-886 \
+-L AgR006_g147_t01:1814-1863 \
+-O ${IND}AgR006_g147_t01_variants_sequence.fa \
+-V ${IND}AgR006_g147_t01_variants.vcf
+done
+
+for IND in ${INDS[@]};
+do
+	gatk FastaAlternateReferenceMaker -R all_sequences.fa -L AgR022_g119_t04:280-477 -L AgR022_g119_t04:1204-1333 -L AgR022_g119_t04:5273-5376 -L AgR022_g119_t04:6476-6620 -L AgR022_g119_t04:6998-7169 -L AgR022_g119_t04:7812-8066 -L AgR022_g119_t04:8616-8775 -L AgR022_g119_t04:10409-10633 -L AgR022_g119_t04:11503-11631 -L AgR022_g119_t04:12477-12661 -L AgR022_g119_t04:13833-14009 -L AgR022_g119_t04:14833-15100 -L AgR022_g119_t04:15965-16173 -L AgR022_g119_t04:16890-17177 -L AgR022_g119_t04:17470-17542 -L AgR022_g119_t04:18736-19000 -L AgR022_g119_t04:19122-19356 -L AgR022_g119_t04:19687-19899 -L AgR022_g119_t04:20484-20555 -L AgR022_g119_t04:21079-21366 -L AgR022_g119_t04:21832-21957 -L AgR022_g119_t04:22477-22669 -L AgR022_g119_t04:23114-23332 -L AgR022_g119_t04:23582-23749 -L AgR022_g119_t04:24310-24540 -L AgR022_g119_t04:25038-25220 -L AgR022_g119_t04:26126-26258 -L AgR022_g119_t04:27039-27138 -L AgR022_g119_t04:28418-28547 -L AgR022_g119_t04:29285-29413 -L AgR022_g119_t04:29663-29802 -L AgR022_g119_t04:30676-30804 -L AgR022_g119_t04:31399-31601 -O ${IND}AgR022_g119_t04_variants_sequence.fa -V ${IND}AgR022_g119_t04_variants.vcf
+done
+
+for IND in ${INDS[@]};
+do
+	gatk FastaAlternateReferenceMaker -R all_sequences.fa -L AgB02_g451_t08:4809-4868 -L AgB02_g451_t08:5634-5776 -L AgB02_g451_t08:6397-6469 -L AgB02_g451_t08:7695-7826 -L AgB02_g451_t08:8250-8384 -L AgB02_g451_t08:9291-9461 -L AgB02_g451_t08:10603-10737 -L AgB02_g451_t08:12620-12710 -L AgB02_g451_t08:13245-13468 -L AgB02_g451_t08:13976-14140 -L AgB02_g451_t08:15084-15241 -L AgB02_g451_t08:15633-15795 -L AgB02_g451_t08:16717-16848 -L AgB02_g451_t08:17051-17126 -L AgB02_g451_t08:17891-18907 -L AgB02_g451_t08:19307-19520 -L AgB02_g451_t08:19920-19941 -L AgB02_g451_t08:20492-20518 -O ${IND}AgB02_g451_t08_variants_sequence.fa -V ${IND}AgB02_g451_t08_variants.vcf
+done
+
+for IND in ${INDS[@]};
+do
+	gatk FastaAlternateReferenceMaker -R all_sequences.fa -L AgB01_g251_t03:652-708 -L AgB01_g251_t03:3109-3236 -L AgB01_g251_t03:4293-4384 -L AgB01_g251_t03:5871-5986 -L AgB01_g251_t03:6772-6900 -L AgB01_g251_t03:7628-7743 -L AgB01_g251_t03:8321-8417 -L AgB01_g251_t03:8805-8898 -L AgB01_g251_t03:9795-9937 -L AgB01_g251_t03:10963-11149 -L AgB01_g251_t03:11475-11593 -L AgB01_g251_t03:12460-12510 -O ${IND}AgB01_g251_t03_variants_sequence.fa -V ${IND}AgB01_g251_t03_variants.vcf
+done
+
+for IND in ${INDS[@]};
+do
+	gatk FastaAlternateReferenceMaker -R all_sequences.fa  -L AgR015_g018_t01:93-218 -L AgR015_g018_t01:704-1082 -L AgR015_g018_t01:1557-1687 -L AgR015_g018_t01:29560-29715 -L AgR015_g018_t01:29999-30151 -L AgR015_g018_t01:30853-30972 -L AgR015_g018_t01:31222-31287 -O ${IND}AgR015_g018_t01_variants_sequence.fa -V ${IND}AgR015_g018_t01_variants.vcf
+done
+
+#Protein translation was then done with BioEdit to assess which of these proteing-coding variants would be synonymous, nonsynonymous or nonsense.
+
+#create the alternative sequence for each mitochondria and analyse that with the other available sequences (From NCBI and easton 2020).
+#first subset the conjoint vcf file with the genotypes for the mitochondria
+for IND in ${INDS[@]};
+do
+	vcf-subset --exclude-ref -c ${IND} chr_Mitochondria.filtered.merged.variants.phillipines.vcf.gz > ${IND}Mitochondria_variants.vcf 
+done
+
+#must index file before continuing
+for IND in ${INDS[@]};
+do
+	gatk IndexFeatureFile \
+    -I ${IND}Mitochondria_variants.vcf
+done
+
+#create a mitochondria fasta reference for each sequence
+for IND in ${INDS[@]};
+do
+gatk FastaAlternateReferenceMaker \
+-R all_sequences.fa \
+-L chr_Mitochondria \
+-O ${IND}Mitochondria_variants_sequence.fa \
+-V ${IND}Mitochondria_variants.vcf
+done
+
+
