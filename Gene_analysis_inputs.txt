@@ -6,15 +6,6 @@ cat Run1/Bunawan_Ascaris_1_S10_S10_R1_001.fastq.gz Run2/Bunawan_Ascaris_1_S10_S1
 #fastp commands to trim data. Have to change file names to the appropriate ones. Specified the minimum length of 50bp and the adapter sequence (the rest of the trimming details follow the program default and are highlighted in the text).
 fastp --in1 Bunawan_Ascaris_1_S10_merged_R1_fastq.gz --in2 Bunawan_Ascaris_1_S10_merged_R2_fastq.gz --adapter_sequence CTGTCTCTTATACACATCT --out1 S10_R1_trimmed.fastq.gz --out2 S10_R2_trimmed.fastq.gz -l 50 -h trial.html &> trial.log
 
-#the following code is used to extract a sample from each file to blast it agaisnt ncbi database.
-
-#Going to extract the first 120 lines of fastq files (30 reads) to check on BLAST the possible origin species of each sequence.
-gunzip -c S10_R1_trimmed.fastq.gz | head -120 > sample_S9_R1.fastq
-
-#R Script to extract the 30 sequences from the files above is available in https://github.com/FMDEvangelista/Scripts/blob/main/read_extraction.r
-
-#reads were then submitted to BlastN in NCBI to assess identity to known reads.
-
 #Mapping the reads to the most recent A. suum genome and check mapping statistics. Should expect at least 90% mapped reads or properly-paired reads. We are being conservative here as we are using somatic cell instead of germline cells.
 
 #make bwa index the reference genome for further analysis
@@ -64,6 +55,15 @@ for IND in ${INDS[@]};
 do
 	samtools flagstat ${IND}nodup.bam
 done
+
+#the following code is used to extract a sample from each trimmed unmapped read file to blast it agaisnt ncbi database.
+
+#Going to extract the first 120 lines of fastq files (30 reads) to check on BLAST the possible origin species of each sequence.
+gunzip -c S10_R1_trimmed.fastq.gz | head -120 > sample_S9_R1.fastq
+
+#R Script to extract the 30 sequences from the files above is available in https://github.com/FMDEvangelista/Scripts/blob/main/read_extraction.r
+
+#reads were then submitted to BlastN in NCBI to assess identity to known reads.
 
 #After checking the reads agaisnt the databases and the mapping statistics of each sample, we decided to exclude S9 due to possible contamination. We now re-apply the framework with the desired genes to samples S7, S8 and S10.
 
